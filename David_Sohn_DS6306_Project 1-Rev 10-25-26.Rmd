@@ -1,0 +1,733 @@
+---
+title: "David_Sohn_DS6306_Project 1"
+author: "Dave"
+date: "2026-10-11"
+output: html_document
+---
+
+Video: https://youtu.be/dkSSok6w-yY
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+library(ROCR)
+library(class)
+library(e1071)
+```
+
+```{r}
+df <- read.csv("CaseStudy1-data.csv", stringsAsFactors = TRUE)
+
+df_clean <- df %>%
+  select(-EmployeeCount, -StandardHours, -Over18, -EmployeeNumber, -ID) %>%
+  mutate(
+    Attrition = factor(Attrition, levels = c("No", "Yes")),
+    AnnualSalary = MonthlyIncome * 12,
+    ReplacementCostMultiplier = case_when(
+      JobLevel == 1 ~ 0.50,  
+      JobLevel == 2 ~ 1.00,  
+      JobLevel == 3 ~ 1.50,  
+      JobLevel == 4 ~ 2.50,  
+      JobLevel == 5 ~ 4.00,  
+      TRUE          ~ 1.00))
+
+attrition_totals <- table(df_clean$Attrition)
+attrition_pcts   <- round(prop.table(attrition_totals) * 100, 2)
+cat(paste("Total Employees Retained ('No')  :", attrition_totals["No"],  "profiles (", attrition_pcts["No"],  "%)\n"))
+cat(paste("Total Employees Departed ('Yes') :", attrition_totals["Yes"], "profiles (", attrition_pcts["Yes"], "%)\n"))
+cat(paste("Total Organizational Sample Size  :", sum(attrition_totals),   "observations\n"))
+
+df_viz <- df_clean %>%
+  mutate(Attrition = factor(Attrition, levels = c("No", "Yes")))
+
+theme_corporate <- function() {
+  theme_minimal(base_size = 11) +
+    theme(
+      plot.title = element_text(face = "bold", size = 13, color = "#333333"),
+      plot.subtitle = element_text(size = 10, color = "#666666", margin = margin(b = 10)),
+      strip.background = element_rect(fill = "#f2f2f2", color = NA),
+      strip.text = element_text(face = "bold", size = 9, color = "#333333"),
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom")}
+
+p2 <- ggplot(df_viz, aes(x = JobRole, y = MonthlyIncome, fill = Attrition)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_manual(values = c("#2ca02c", "#d62728")) +
+  labs(
+    title = "High Impact: Compensation Compression Matrix",
+    subtitle = "Turnover concentrates within lower salary bands in frontline positions.",
+    x = "Assigned Operational Job Role", y = "Monthly Gross Compensation ($)") + 
+  theme_corporate() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p4 <- ggplot(df_viz, aes(x = MaritalStatus, y = DistanceFromHome, fill = Attrition)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_manual(values = c("#2ca02c", "#d62728")) +
+  labs(
+    title = "Hidden Trend: Commute Vulnerability vs. Family Structure",
+    subtitle = "Single employees traveling long distances represent isolated flight risks.",
+    x = "Marital Status", y = "Commute Distance From Home (Miles)") + 
+  theme_corporate()
+
+p_salary_by_rank <- ggplot(df_viz, aes(x = Attrition, y = MonthlyIncome, fill = Attrition)) +
+  geom_boxplot(alpha = 0.75, outlier.color = "#d62728", outlier.size = 1.5) +
+  facet_grid(. ~ JobLevel) +
+  scale_fill_manual(values = c("#2ca02c", "#d62728")) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  labs(
+    title = "Frito-Lay Compensation Matrix: Attrition Dynamics Across All 5 Ranks",
+    subtitle = "Analysis of wage bands within specific hierarchy tiers highlights low entry-level pay ceilings.",
+    x = "Voluntary Attrition Status",
+    y = "Monthly Gross Salary ($)",
+    fill = "Flight Outcome") + 
+  theme_corporate()
+
+# --- DIAGNOSTIC 2: INCOME VS ATTRITION FACETED BY JOB CATEGORY (JOB ROLES) ---
+p_salary_by_role <- ggplot(df_viz, aes(x = Attrition, y = MonthlyIncome, fill = Attrition)) +
+  geom_boxplot(alpha = 0.75, outlier.color = "#d62728", outlier.size = 1.5) +
+  facet_wrap(~ JobRole, scales = "free_y", nrow = 3) +  # free_y permits localized focus per category band
+  scale_fill_manual(values = c("#2ca02c", "#d62728")) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  labs(
+    title = "Frito-Lay Compensation Matrix: Attrition Profiles by Operational Job Category",
+    subtitle = "Localized wage scales permit immediate auditing of individual departmental risk triggers.",
+    x = "Voluntary Attrition Status",
+    y = "Monthly Gross Salary ($)",
+    fill = "Flight Outcome") + 
+  theme_corporate()
+
+p5 <- ggplot(df_viz, aes(x = OverTime, fill = Attrition)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_fill_manual(values = c("#2ca02c", "#d62728")) +
+  labs(
+    title = "High Impact: OverTime Strain Curve",
+    subtitle = "Voluntary turnover nearly triples among staff working extended hours.",
+    x = "OverTime Status", y = "Proportion of Workforce Class", fill = "Attrition") + 
+  theme_corporate()
+
+p6 <- ggplot(df_viz, aes(x = Attrition, y = HourlyRate, fill = Attrition)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_manual(values = c("#2ca02c", "#d62728")) +
+  labs(
+    title = "Low Impact: Hourly Rate Irrelevance",
+    subtitle = "Aggregated hourly metrics show almost zero correlation with flights.",
+    x = "Observed Attrition Outcome", y = "Hourly Pay Rate ($)", fill = "Attrition") + 
+  theme_corporate()
+
+print(p_salary_by_rank)
+print(p_salary_by_role)
+print(p5)
+print(p6)
+print(p2)
+print(p4)
+
+set.seed(42)
+trainIndex <- createDataPartition(df_clean$Attrition, p = 0.8, list = FALSE)
+train_set  <- df_clean[trainIndex, ]
+test_set   <- df_clean[-trainIndex, ]
+
+attrition_model <- glm(Attrition ~ OverTime + JobRole + MonthlyIncome + 
+                       MaritalStatus + DistanceFromHome, 
+                       data = train_set, family = "binomial")
+summary(attrition_model)
+
+test_preds_prob <- predict(attrition_model, newdata = test_set, type = "response")
+
+INCENTIVE_COST <- 200    
+SUCCESS_RATE   <- 0.40   
+
+evaluate_financial_impact <- function(threshold, probabilities, actual_data) {
+  predicted_class <- ifelse(probabilities > threshold, "Yes", "No")
+  results_df <- data.frame(
+    Actual       = actual_data$Attrition,
+    Predicted    = predicted_class,
+    AnnualSalary = actual_data$AnnualSalary,
+    Multiplier   = actual_data$ReplacementCostMultiplier,
+    stringsAsFactors = FALSE)
+  
+  results_df <- results_df %>%
+    mutate(
+      IndividualReplacementCost = AnnualSalary * Multiplier,
+      Scenario_Cost = case_when(
+        Actual == "No"  & Predicted == "No"  ~ 0,
+        Actual == "Yes" & Predicted == "No"  ~ IndividualReplacementCost,
+        Actual == "Yes" & Predicted == "Yes" ~ INCENTIVE_COST + ((1 - SUCCESS_RATE) * IndividualReplacementCost),
+        Actual == "No"  & Predicted == "Yes" ~ INCENTIVE_COST))
+  
+  baseline_cost <- sum(ifelse(results_df$Actual == "Yes", results_df$IndividualReplacementCost, 0))
+  model_cost    <- sum(results_df$Scenario_Cost)
+  net_savings   <- baseline_cost - model_cost
+  flagged_cnt   <- sum(results_df$Predicted == "Yes")
+  saved_cnt     <- sum(results_df$Actual == "Yes" & results_df$Predicted == "Yes") * SUCCESS_RATE
+  
+  return(data.frame(
+    Threshold         = threshold,
+    Baseline_Cost     = baseline_cost,
+    Model_Cost        = model_cost,
+    Net_Savings       = net_savings,
+    Employees_Flagged = flagged_cnt,
+    Turnovers_Averted = saved_cnt))}
+
+thresholds     <- seq(0.05, 0.70, by = 0.025)
+financial_grid <- map_df(thresholds, evaluate_financial_impact, 
+                         probabilities = test_preds_prob, 
+                         actual_data = test_set)
+
+optimal_strategy <- financial_grid %>% filter(Net_Savings == max(Net_Savings)) %>% head(1)
+print(optimal_strategy)
+
+savings_plot <- ggplot(financial_grid, aes(x = Threshold, y = Net_Savings)) +
+  geom_line(color = "#1f77b4", linewidth = 1.2) +
+  geom_point(color = "#1f77b4", size = 2) +
+  geom_vline(xintercept = optimal_strategy$Threshold, linetype = "dashed", color = "#d62728", linewidth = 1) +
+  geom_point(data = optimal_strategy, aes(x = Threshold, y = Net_Savings), color = "#d62728", size = 4) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  labs(
+    title = "Frito-Lay Attrition Model: Profit Maximization Analysis",
+    subtitle = paste("Maximum Net Savings of", scales::dollar(optimal_strategy$Net_Savings), 
+                     "achieved at a classification threshold of", optimal_strategy$Threshold),
+    x = "Classification Probability Threshold Cutoff",
+    y = "Net Corporate Cost Savings ($)",
+    caption = "Assumptions: Tiered Role Replacement Penalty (50%-400%) | $200 Incentive Care | 40% Mitigation Success Rate") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    panel.grid.minor = element_blank())
+
+print(savings_plot)
+
+cat(paste("Optimal Probability Threshold :", optimal_strategy$Threshold, "\n"))
+cat(paste("Total Risk Interventions Sent :", optimal_strategy$Employees_Flagged, "\n"))
+cat(paste("High-Value Flight Averted     :", round(optimal_strategy$Turnovers_Averted, 1), "employees\n"))
+cat(paste("Unmitigated Risk Exposure Cost: $", format(round(optimal_strategy$Baseline_Cost), big.mark=","), "\n"))
+cat(paste("Mitigated Strategy Budget Cost: $", format(round(optimal_strategy$Model_Cost), big.mark=","), "\n"))
+cat(paste("MAXIMIZED NET SAVINGS REALIZED: $", format(round(optimal_strategy$Net_Savings), big.mark=","), "\n"))
+
+final_classes <- factor(ifelse(test_preds_prob > optimal_strategy$Threshold, "Yes", "No"), levels = c("No", "Yes"))
+print(confusionMatrix(final_classes, test_set$Attrition, positive = "Yes"))
+```
+
+```{r best threshold}
+library(pROC)
+df_master <- read.csv("CaseStudy1-data.csv", stringsAsFactors = TRUE)
+df_modeling <- df_master %>%
+  select(-EmployeeCount, -StandardHours, -Over18, -EmployeeNumber, -ID)
+
+set.seed(42)
+idx <- createDataPartition(df_modeling$Attrition, p = 0.8, list = FALSE)
+m_train <- df_modeling[idx, ]
+m_val   <- df_modeling[-idx, ]
+nb_fit <- naiveBayes(Attrition ~ OverTime + JobRole + MonthlyIncome + 
+                     MaritalStatus + DistanceFromHome, data = m_train)
+nb_probs <- predict(nb_fit, newdata = m_val, type = "raw")
+roc_obj <- roc(m_val$Attrition, nb_probs[, "Yes"], levels = c("No", "Yes"))
+
+best_thresh <- coords(roc_obj, "best", ret = "threshold", best.method = "youden")
+print(best_thresh$threshold)
+```
+
+```{r alternative_models}
+df_master <- read.csv("CaseStudy1-data.csv", stringsAsFactors = TRUE)
+df_modeling <- df_master %>%
+  select(-EmployeeCount, -StandardHours, -Over18, -EmployeeNumber, -ID)
+
+set.seed(42)
+idx <- createDataPartition(df_modeling$Attrition, p = 0.8, list = FALSE)
+m_train <- df_modeling[idx, ]
+m_val   <- df_modeling[-idx, ]
+
+nb_fit <- naiveBayes(Attrition ~ OverTime + JobRole + MonthlyIncome + 
+                     MaritalStatus + DistanceFromHome, data = m_train)
+
+nb_preds <- predict(nb_fit, newdata = m_val)
+nb_matrix <- confusionMatrix(nb_preds, m_val$Attrition, positive = "Yes")
+print(nb_matrix)
+
+custom_threshold <- 0.30
+
+nb_preds_custom <- ifelse(nb_probs[, "Yes"] >= custom_threshold, "Yes", "No")
+
+nb_preds_custom <- factor(nb_preds_custom, levels = c("No", "Yes"))
+nb_matrix_custom <- confusionMatrix(nb_preds_custom, m_val$Attrition, positive = "Yes")
+print(nb_matrix_custom)
+```
+
+```{r best model}
+custom_threshold <- 0.2918321
+
+nb_preds_custom <- ifelse(nb_probs[, "Yes"] >= custom_threshold, "Yes", "No")
+nb_preds_custom <- factor(nb_preds_custom, levels = c("No", "Yes"))
+nb_matrix_custom <- confusionMatrix(nb_preds_custom, m_val$Attrition, positive = "Yes")
+print(nb_matrix_custom)
+
+attrition_model_NB <- naiveBayes(Attrition ~ OverTime + JobRole + MonthlyIncome + 
+                             MaritalStatus + DistanceFromHome, 
+                             data = train_set)
+print(attrition_model_NB)
+
+df_comp <- read.csv("CaseStudy1CompSet No Attrition.csv", stringsAsFactors = TRUE)
+df_comp_clean <- df_comp %>%
+  mutate(
+    AnnualSalary = MonthlyIncome * 12,
+    ReplacementCostMultiplier = case_when(
+      JobLevel == 1 ~ 0.50,  
+      JobLevel == 2 ~ 1.00,  
+      JobLevel == 3 ~ 1.50,  
+      JobLevel == 4 ~ 2.50,  
+      JobLevel == 5 ~ 4.00,  
+      TRUE          ~ 1.00),
+    IndividualReplacementCost = AnnualSalary * ReplacementCostMultiplier)
+
+comp_probs <- predict(attrition_model_NB, newdata = df_comp_clean, type = "raw")[, "Yes"]
+
+comp_predictions <- ifelse(comp_probs >= custom_threshold, "Yes", "No")
+comp_predictions <- factor(comp_predictions, levels = c("No", "Yes"))
+
+output_payload <- data.frame(
+  ID = df_comp_clean$ID,
+  Attrition = comp_predictions) %>% 
+  arrange(ID)
+
+write.csv(output_payload, file = "Case1PredictionsSohn Attrition.csv", row.names = FALSE)
+cat("\n[SUCCESS]: 'Case1PredictionsSohn Attrition.csv' generated cleanly.\n\n")
+
+print(table(output_payload$Attrition))
+
+INCENTIVE_COST <- 200    
+SUCCESS_RATE   <- 0.40   
+
+evaluate_financial_impact <- function(threshold, probabilities, actual_data) {
+  
+  predicted_class <- ifelse(probabilities > threshold, "Yes", "No")
+  
+   results_df <- data.frame(
+    Actual            = actual_data$Attrition,
+    Predicted         = predicted_class,
+    AnnualSalary      = actual_data$AnnualSalary,
+    Multiplier        = actual_data$ReplacementCostMultiplier,
+    stringsAsFactors  = FALSE)
+  
+  results_df <- results_df %>% 
+    mutate(
+      IndividualReplacementCost = AnnualSalary * Multiplier,
+      Scenario_Cost = case_when(
+        Actual == "No"  & Predicted == "No"  ~ 0,
+        Actual == "Yes" & Predicted == "No"  ~ IndividualReplacementCost,
+        Actual == "Yes" & Predicted == "Yes" ~ INCENTIVE_COST + ((1 - SUCCESS_RATE) * IndividualReplacementCost),
+        Actual == "No"  & Predicted == "Yes" ~ INCENTIVE_COST,
+        TRUE                                 ~ 0))
+  
+  baseline_cost     <- sum(ifelse(results_df$Actual == "Yes", results_df$IndividualReplacementCost, 0))
+  model_cost        <- sum(results_df$Scenario_Cost)
+  net_savings       <- baseline_cost - model_cost
+  flagged_cnt       <- sum(results_df$Predicted == "Yes")
+  saved_cnt         <- sum(results_df$Actual == "Yes" & results_df$Predicted == "Yes") * SUCCESS_RATE
+  
+  return(data.frame(
+    Threshold         = threshold,
+    Baseline_Cost     = baseline_cost,
+    Model_Cost        = model_cost,
+    Net_Savings       = net_savings,
+    Employees_Flagged = flagged_cnt,
+    Turnovers_Averted = saved_cnt))}
+
+thresholds     <- seq(0.05, 0.70, by = 0.025)
+financial_grid <- map_df(thresholds, evaluate_financial_impact, 
+                         probabilities = test_preds_prob, 
+                         actual_data = test_set)
+
+optimal_strategy <- financial_grid %>% filter(Net_Savings == max(Net_Savings)) %>% head(1)
+print(optimal_strategy)
+
+savings_plot <- ggplot(financial_grid, aes(x = Threshold, y = Net_Savings)) +
+  geom_line(color = "#1f77b4", linewidth = 1.2) +
+  geom_point(color = "#1f77b4", size = 2) +
+  geom_vline(xintercept = optimal_strategy$Threshold, linetype = "dashed", color = "#d62728", linewidth = 1) +
+  geom_point(data = optimal_strategy, aes(x = Threshold, y = Net_Savings), color = "#d62728", size = 4) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  labs(
+    title = "Frito-Lay Attrition Model: Profit Maximization Analysis",
+    subtitle = paste("Maximum Net Savings of", scales::dollar(optimal_strategy$Net_Savings), 
+                     "achieved at a classification threshold of", optimal_strategy$Threshold),
+    x = "Classification Probability Threshold Cutoff",
+    y = "Net Corporate Cost Savings ($)",
+    caption = "Assumptions: Tiered Role Replacement Penalty (50%-400%) | $200 Incentive Care | 40% Mitigation Success Rate") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    panel.grid.minor = element_blank())
+
+print(savings_plot)
+
+cat(paste("Optimal Probability Threshold :", optimal_strategy$Threshold, "\n"))
+cat(paste("Total Risk Interventions Sent :", optimal_strategy$Employees_Flagged, "\n"))
+cat(paste("High-Value Flight Averted     :", round(optimal_strategy$Turnovers_Averted, 1), "employees\n"))
+cat(paste("Unmitigated Risk Exposure Cost: $", format(round(optimal_strategy$Baseline_Cost), big.mark=","), "\n"))
+cat(paste("Mitigated Strategy Budget Cost: $", format(round(optimal_strategy$Model_Cost), big.mark=","), "\n"))
+cat(paste("MAXIMIZED NET SAVINGS REALIZED: $", format(round(optimal_strategy$Net_Savings), big.mark=","), "\n"))
+```
+
+```{r Model alt-alt}
+final_classes <- factor(ifelse(test_preds_prob > optimal_strategy$Threshold, "Yes", "No"), levels = c("No", "Yes"))
+print(confusionMatrix(final_classes, test_set$Attrition, positive = "Yes"))
+
+knn_features <- c("MonthlyIncome", "DistanceFromHome", "TotalWorkingYears", "YearsAtCompany", "Age")
+
+scaled_train <- scale(m_train[, knn_features])
+scaled_val   <- scale(m_val[, knn_features], 
+                     center = attr(scaled_train, "scaled:center"), 
+                     scale = attr(scaled_train, "scaled:scale"))
+
+k_values <- seq(1, 21, by = 2) 
+knn_results <- data.frame(K = integer(), Sensitivity = numeric())
+
+for (k_val in k_values) {
+  predictions <- knn(train = scaled_train, test = scaled_val, 
+                     cl = m_train$Attrition, k = k_val)
+  
+  loop_matrix <- confusionMatrix(predictions, m_val$Attrition, positive = "Yes")
+  sens <- loop_matrix$byClass["Sensitivity"]
+  
+  knn_results <- rbind(knn_results, data.frame(K = k_val, Sensitivity = sens))}
+
+optimal_k <- knn_results %>% filter(Sensitivity == max(Sensitivity)) %>% head(1)
+
+k_optimization_plot <- ggplot(knn_results, aes(x = K, y = Sensitivity)) +
+  geom_line(color = "#1f77b4", linewidth = 1.2) + # Changed color to distinguish from accuracy chart
+  geom_point(color = "#1f77b4", size = 3) +
+  # Draw marker at the exact peak performance neighborhood coordinate
+  geom_vline(xintercept = optimal_k$K, linetype = "dashed", color = "#d62728", linewidth = 1) +
+  geom_point(data = optimal_k, aes(x = K, y = Sensitivity), color = "#d62728", size = 5) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  scale_x_continuous(breaks = k_values) +
+  labs(
+    title = "KNN Hyperparameter Tuning: Sensitivity Optimization Search",
+    subtitle = paste("Absolute peak sensitivity of", scales::percent(optimal_k$Sensitivity, accuracy = 0.1), 
+                     "achieved at k =", optimal_k$K),
+    x = "Number of Neighbors (Value of K)",
+    y = "Validation Set Sensitivity (%)",
+    caption = "Evaluated via 80/20 out-of-sample data partitioning.") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 12),
+    panel.grid.minor = element_blank())
+
+print(k_optimization_plot)
+
+best_knn_preds <- knn(train = scaled_train, test = scaled_val, 
+                      cl = m_train$Attrition, k = optimal_k$K)
+knn_matrix <- confusionMatrix(best_knn_preds, m_val$Attrition, positive = "Yes")
+print(knn_matrix)
+```
+
+```{r Model 1}
+library(tidyverse)
+library(caret)
+library(randomForest)
+
+df_train <- read.csv("CaseStudy1-data.csv", stringsAsFactors = TRUE)
+df_train_clean <- df_train %>%
+  select(-EmployeeCount, -StandardHours, -Over18, -EmployeeNumber) %>%
+  mutate(Attrition = factor(Attrition, levels = c("No", "Yes")))
+
+set.seed(42)
+splitIndex <- createDataPartition(df_train_clean$Attrition, p = 0.8, list = FALSE)
+train_slice <- df_train_clean[splitIndex, ]
+val_slice   <- df_train_clean[-splitIndex, ]
+
+train_balanced <- downSample(x = select(train_slice, -Attrition, -ID),
+                             y = train_slice$Attrition,
+                             yname = "Attrition")
+
+rf_model <- randomForest(Attrition ~ OverTime + JobRole + MonthlyIncome + 
+                         MaritalStatus + DistanceFromHome + TotalWorkingYears + 
+                         YearsAtCompany + JobLevel + EnvironmentSatisfaction, 
+                         data = train_balanced, ntree = 500, mtry = 3, importance = TRUE)
+
+val_probs <- predict(rf_model, newdata = val_slice, type = "prob")[, "Yes"]
+
+OPTIMAL_THRESHOLD <- 0.42
+
+val_preds <- factor(ifelse(val_probs > OPTIMAL_THRESHOLD, "Yes", "No"), levels = c("No", "Yes"))
+matrix_metrics <- confusionMatrix(val_preds, val_slice$Attrition, positive = "Yes")
+print(matrix_metrics)
+
+df_comp <- read.csv("CaseStudy1CompSet No Attrition.csv", stringsAsFactors = TRUE)
+df_comp_clean <- df_comp %>%
+    mutate(
+      AnnualSalary = MonthlyIncome * 12,
+      ReplacementCostMultiplier = case_when(
+        JobLevel == 1 ~ 0.50,  
+        JobLevel == 2 ~ 1.00,  
+        JobLevel == 3 ~ 1.50,  
+        JobLevel == 4 ~ 2.50,  
+        JobLevel == 5 ~ 4.00,  
+        TRUE          ~ 1.00),
+      IndividualReplacementCost = AnnualSalary * ReplacementCostMultiplier)
+ 
+  comp_probs <- predict(rf_model, newdata = df_comp, type = "prob")[, "Yes"]
+  
+  comp_predictions <- ifelse(comp_probs > OPTIMAL_THRESHOLD, "Yes", "No")
+  comp_predictions <- factor(comp_predictions, levels = c("No", "Yes"))
+  
+  output_payload <- data.frame(
+    ID = df_comp$ID,
+    Attrition = comp_predictions) %>% 
+    arrange(ID) 
+  
+comp_counts <- table(output_payload$Attrition)
+  print(comp_counts)
+  
+  comp_pcts <- round(prop.table(comp_counts) * 100, 2)
+  cat(paste("Predicted Retained Profile ('No') :", comp_pcts["No"], "%\n"))
+  cat(paste("Predicted Risk Profile     ('Yes'):", comp_pcts["Yes"], "%\n"))
+  cat(paste("Total Verified Row Ingestion     :", nrow(output_payload), "out of 300 rows\n"))
+
+  INCENTIVE_BUDGET     <- 200    
+  PROGRAM_SUCCESS_RATE <- 0.40   
+  
+  financial_audit <- df_comp_clean %>%
+    mutate(
+      Predicted_Attrition = comp_predictions,
+      Unmanaged_Exposure = IndividualReplacementCost)
+
+  target_group <- financial_audit %>% filter(Predicted_Attrition == "Yes")
+  
+  estimated_unmitigated_losses <- sum(target_group$Unmanaged_Exposure)
+  total_intervention_spend <- nrow(target_group) * INCENTIVE_BUDGET
+  value_of_flights_averted <- estimated_unmitigated_losses * PROGRAM_SUCCESS_RATE
+  net_corporate_savings <- value_of_flights_averted - total_intervention_spend
+  
+  cat(paste("Total Employees Evaluated      :", nrow(financial_audit), "Profiles\n"))
+  cat(paste("High-Risk Proactive Alerts Sent:", nrow(target_group), "Employees\n"))
+  cat(paste("Targeted Flights Safely Saved  :", round(nrow(target_group) * PROGRAM_SUCCESS_RATE, 1), "Employees\n"))
+  cat(paste("Total Target Risk Exposure     : $", format(round(estimated_unmitigated_losses), big.mark=","), "\n"))
+  cat(paste("Estimated Unmitigated Losses   : $", format(round(estimated_unmitigated_losses), big.mark=","), "\n"))
+  cat(paste("Programmatic Outreach Spend    : $", format(round(total_intervention_spend), big.mark=","), "\n"))
+  cat(paste("Gross Attrition Capital Saved  : $", format(round(value_of_flights_averted), big.mark=","), "\n"))
+  cat(paste("NET MODEL-DRIVEN SAVINGS       : $", format(round(net_corporate_savings), big.mark=","), "\n"))
+```
+
+```{r Model 2}
+df_train <- read.csv("CaseStudy1-data.csv", stringsAsFactors = TRUE)
+
+df_train_clean <- df_train %>%
+  select(-EmployeeCount, -StandardHours, -Over18, -EmployeeNumber) %>%
+  mutate(Attrition = factor(Attrition, levels = c("No", "Yes")))
+
+set.seed(42)
+splitIndex  <- createDataPartition(df_train_clean$Attrition, p = 0.8, list = FALSE)
+train_slice <- df_train_clean[splitIndex, ]
+val_slice   <- df_train_clean[-splitIndex, ]
+
+train_balanced <- downSample(x = select(train_slice, -Attrition, -ID),
+                             y = train_slice$Attrition,
+                             yname = "Attrition")
+
+rf_model <- randomForest(Attrition ~ OverTime + JobRole + MonthlyIncome + 
+                         MaritalStatus + DistanceFromHome + TotalWorkingYears + 
+                         YearsAtCompany + JobLevel + EnvironmentSatisfaction +
+                         JobInvolvement + WorkLifeBalance, 
+                         data = train_balanced, 
+                         ntree = 750,       
+                         mtry = 3,          
+                         importance = TRUE)
+
+val_probs <- predict(rf_model, newdata = val_slice, type = "prob")[, "Yes"]
+
+OPTIMAL_THRESHOLD <- 0.40
+
+val_preds <- factor(ifelse(val_probs > OPTIMAL_THRESHOLD, "Yes", "No"), levels = c("No", "Yes"))
+matrix_metrics <- confusionMatrix(val_preds, val_slice$Attrition, positive = "Yes")
+print(matrix_metrics)
+
+df_comp <- read.csv("CaseStudy1CompSet No Attrition.csv", stringsAsFactors = TRUE)
+df_comp_clean <- df_comp %>%
+  mutate(
+    AnnualSalary = MonthlyIncome * 12,
+    ReplacementCostMultiplier = case_when(
+      JobLevel == 1 ~ 0.50,  
+      JobLevel == 2 ~ 1.00,  
+      JobLevel == 3 ~ 1.50,  
+      JobLevel == 4 ~ 2.50,  
+      JobLevel == 5 ~ 4.00,  
+      TRUE          ~ 1.00),
+    IndividualReplacementCost = AnnualSalary * ReplacementCostMultiplier)
+
+comp_probs <- predict(rf_model, newdata = df_comp_clean, type = "prob")[, "Yes"]
+comp_predictions <- ifelse(comp_probs > OPTIMAL_THRESHOLD, "Yes", "No")
+comp_predictions <- factor(comp_predictions, levels = c("No", "Yes"))
+
+output_payload <- data.frame(
+  ID = df_comp_clean$ID,
+  Attrition = comp_predictions) %>% 
+  arrange(ID)
+
+write.csv(output_payload, file = "Case1PredictionsSohn Attrition Model-2.csv", row.names = FALSE)
+cat("\n[SUCCESS]: 'Case1PredictionsSohn Attrition Model-2.csv' generated at 0.40 threshold standard.\n\n")
+
+INCENTIVE_BUDGET     <- 200    
+PROGRAM_SUCCESS_RATE <- 0.40   
+
+financial_audit <- df_comp_clean %>%
+  mutate(
+    Predicted_Attrition = comp_predictions,
+    Unmanaged_Exposure  = IndividualReplacementCost)
+
+comp_counts              <- table(output_payload$Attrition)
+comp_pcts                <- round(prop.table(comp_counts) * 100, 2)
+target_group <- financial_audit %>% filter(Predicted_Attrition == "Yes")
+  
+  estimated_unmitigated_losses <- sum(target_group$Unmanaged_Exposure)
+  total_intervention_spend <- nrow(target_group) * INCENTIVE_BUDGET
+  value_of_flights_averted  <- estimated_unmitigated_losses * PROGRAM_SUCCESS_RATE
+  net_corporate_savings <- value_of_flights_averted - total_intervention_spend
+  
+  cat(paste("Total Employees Evaluated      :", nrow(financial_audit), "Profiles\n"))
+  cat(paste("High-Risk Proactive Alerts Sent:", nrow(target_group), "Employees\n"))
+  cat(paste("Targeted Flights Safely Saved  :", round(nrow(target_group) * PROGRAM_SUCCESS_RATE, 1), "Employees\n"))
+  cat(paste("Total Target Risk Exposure     : $", format(round(estimated_unmitigated_losses), big.mark=","), "\n"))
+  cat(paste("Estimated Unmitigated Losses   : $", format(round(estimated_unmitigated_losses), big.mark=","), "\n"))
+  cat(paste("Programmatic Outreach Spend    : $", format(round(total_intervention_spend), big.mark=","), "\n"))
+  cat(paste("Gross Attrition Capital Saved  : $", format(round(value_of_flights_averted), big.mark=","), "\n"))
+  cat(paste("NET MODEL-DRIVEN SAVINGS       : $", format(round(net_corporate_savings), big.mark=","), "\n"))
+```
+
+```{r RF Model 3}
+df_train <- read.csv("CaseStudy1-data.csv", stringsAsFactors = TRUE)
+df_train_clean <- df_train %>%
+  select(-EmployeeCount, -StandardHours, -Over18, -EmployeeNumber) %>%
+  mutate(Attrition = factor(Attrition, levels = c("No", "Yes")))
+
+set.seed(42)
+splitIndex <- createDataPartition(df_train_clean$Attrition, p = 0.8, list = FALSE)
+train_slice <- df_train_clean[splitIndex, ]
+val_slice   <- df_train_clean[-splitIndex, ]
+
+val_slice_clean <- val_slice %>%
+  mutate(
+    AnnualSalary = MonthlyIncome * 12,
+    ReplacementCostMultiplier = case_when(
+      JobLevel == 1 ~ 0.50,  
+      JobLevel == 2 ~ 1.00,  
+      JobLevel == 3 ~ 1.50,  
+      JobLevel == 4 ~ 2.50,  
+      JobLevel == 5 ~ 4.00,  
+      TRUE          ~ 1.00),
+    IndividualReplacementCost = AnnualSalary * ReplacementCostMultiplier)
+
+train_balanced <- downSample(x = select(train_slice, -Attrition, -ID),
+                             y = train_slice$Attrition,
+                             yname = "Attrition")
+
+rf_model <- randomForest(Attrition ~ OverTime + JobRole + MonthlyIncome + 
+                         MaritalStatus + DistanceFromHome + TotalWorkingYears + 
+                         YearsAtCompany + JobLevel + EnvironmentSatisfaction, 
+                         data = train_balanced, ntree = 500, mtry = 3, importance = TRUE)
+
+val_probs <- predict(rf_model, newdata = val_slice_clean, type = "prob")[, "Yes"]
+
+INCENTIVE_BUDGET     <- 200    
+PROGRAM_SUCCESS_RATE <- 0.40   
+
+threshold_grid <- seq(0.10, 0.90, by = 0.01)
+roi_results <- data.frame(Threshold = numeric(), NetSavings = numeric(), Sensitivity = numeric(), Specificity = numeric())
+
+for (thresh in threshold_grid) {
+  test_preds <- factor(ifelse(val_probs > thresh, "Yes", "No"), levels = c("No", "Yes"))
+  matrix_metrics <- confusionMatrix(test_preds, val_slice_clean$Attrition, positive = "Yes")
+  
+  sens <- matrix_metrics$byClass["Sensitivity"]
+  spec <- matrix_metrics$byClass["Specificity"]
+  precision <- matrix_metrics$byClass["Pos Pred Value"] # Precision (Model Lift)
+  
+  if (is.na(precision)) precision <- 0
+  
+  target_cohort_val <- val_slice_clean[test_preds == "Yes", ]
+  num_alerts <- nrow(target_cohort_val)
+  
+  if (num_alerts > 0) {
+    unmitigated_losses <- sum(target_cohort_val$IndividualReplacementCost) * precision
+    intervention_spend <- num_alerts * INCENTIVE_BUDGET
+    flights_averted     <- unmitigated_losses * PROGRAM_SUCCESS_RATE
+    net_savings        <- flights_averted - intervention_spend
+  } else {
+    net_savings        <- 0}
+  
+  roi_results <- rbind(roi_results, data.frame(Threshold = thresh, NetSavings = net_savings, Sensitivity = sens, Specificity = spec))}
+
+best_roi_config <- roi_results %>% filter(NetSavings == max(NetSavings)) %>% head(1)
+OPTIMAL_THRESHOLD <- best_roi_config$Threshold
+
+roi_plot <- ggplot(roi_results, aes(x = Threshold, y = NetSavings)) +
+  geom_line(color = "#1f77b4", linewidth = 1.2) +
+  geom_area(fill = "#1f77b4", alpha = 0.1) +
+  geom_vline(xintercept = OPTIMAL_THRESHOLD, linetype = "dashed", color = "#d62728", linewidth = 1) +
+  geom_point(data = best_roi_config, aes(x = Threshold, y = NetSavings), color = "#d62728", size = 4) +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  scale_x_continuous(breaks = seq(0.1, 0.9, by = 0.1)) +
+  labs(
+    title = "Financial Optimization Curve Across Decision Thresholds",
+    subtitle = paste0("Absolute peak ROI achieved at threshold = ", OPTIMAL_THRESHOLD, 
+                      " (Expected Net Validation Savings: ", scales::dollar(best_roi_config$NetSavings), ")"),
+    x = "Classification Probability Threshold (Cutoff)",
+    y = "Expected Net Model-Driven Savings ($)",
+    caption = "Optimized via validation cohort using programmatic intervention constraints.") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(color = "gray30", size = 11),
+    panel.grid.minor = element_blank())
+
+print(roi_plot)
+
+cat(paste("    ROI MAXIMUM INTERVENTION THRESHOLD FOUND:", OPTIMAL_THRESHOLD, "   \n"))
+cat(paste("Expected Validation Net Savings  : $", format(round(best_roi_config$NetSavings), big.mark=","), "\n"))
+cat(paste("Model Sensitivity at Peak ROI    :", round(best_roi_config$Sensitivity * 100, 2), "%\n"))
+cat(paste("Model Specificity at Peak ROI    :", round(best_roi_config$Specificity * 100, 2), "%\n"))
+
+val_preds <- factor(ifelse(val_probs > OPTIMAL_THRESHOLD, "Yes", "No"), levels = c("No", "Yes"))
+matrix_metrics <- confusionMatrix(val_preds, val_slice_clean$Attrition, positive = "Yes")
+MODEL_PRECISION <- matrix_metrics$byClass["Pos Pred Value"]
+if (is.na(MODEL_PRECISION)) MODEL_PRECISION <- 0
+
+df_comp <- read.csv("CaseStudy1CompSet No Attrition.csv", stringsAsFactors = TRUE)
+df_comp_clean <- df_comp %>%
+    mutate(
+      AnnualSalary = MonthlyIncome * 12,
+      ReplacementCostMultiplier = case_when(
+        JobLevel == 1 ~ 0.50,  
+        JobLevel == 2 ~ 1.00,  
+        JobLevel == 3 ~ 1.50,  
+        JobLevel == 4 ~ 2.50,  
+        JobLevel == 5 ~ 4.00,  
+        TRUE          ~ 1.00),
+      IndividualReplacementCost = AnnualSalary * ReplacementCostMultiplier)
+ 
+comp_probs <- predict(rf_model, newdata = df_comp, type = "prob")[, "Yes"]
+comp_predictions <- factor(ifelse(comp_probs > OPTIMAL_THRESHOLD, "Yes", "No"), levels = c("No", "Yes"))
+
+output_payload <- data.frame(ID = df_comp$ID, Attrition = comp_predictions) %>% arrange(ID) 
+write.csv(output_payload, file = "Case1PredictionsSohn Attrition-Model 3.csv", row.names = FALSE)
+cat("\n[SUCCESS]: 'Case1PredictionsSohn Attrition-Model 3.csv' generated cleanly.\n\n")
+
+financial_audit <- df_comp_clean %>%
+  mutate(Predicted_Attrition = comp_predictions, Unmanaged_Exposure = IndividualReplacementCost)
+
+target_group <- financial_audit %>% filter(Predicted_Attrition == "Yes")
+estimated_unmitigated_losses <- sum(target_group$Unmanaged_Exposure) * MODEL_PRECISION
+total_intervention_spend <- nrow(target_group) * INCENTIVE_BUDGET
+value_of_flights_averted  <- estimated_unmitigated_losses * PROGRAM_SUCCESS_RATE
+net_corporate_savings <- value_of_flights_averted - total_intervention_spend
+
+cat(paste("Total Employees Evaluated      :", nrow(financial_audit), "Profiles\n"))
+cat(paste("High-Risk Proactive Alerts Sent:", nrow(target_group), "Employees\n"))
+cat(paste("Targeted Flights Safely Saved  :", round(nrow(target_group) * MODEL_PRECISION * PROGRAM_SUCCESS_RATE, 1), "Employees\n"))
+cat(paste("Total Target Risk Exposure     : $", format(round(sum(target_group$Unmanaged_Exposure)), big.mark=","), "\n"))
+cat(paste("Estimated Unmitigated Losses   : $", format(round(estimated_unmitigated_losses), big.mark=","), "\n"))
+cat(paste("Programmatic Outreach Spend    : $", format(round(total_intervention_spend), big.mark=","), "\n"))
+cat(paste("Gross Attrition Capital Saved  : $", format(round(value_of_flights_averted), big.mark=","), "\n"))
+cat(paste("NET MODEL-DRIVEN SAVINGS       : $", format(round(net_corporate_savings), big.mark=","), "\n"))
+```
